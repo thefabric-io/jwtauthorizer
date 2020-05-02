@@ -8,7 +8,7 @@ func (ai *AuthorizedIssuers) AddAuthorizedIssuers(ii ...string) {
 
 func (ai AuthorizedIssuers) IssuerIsAuthorized(iss string) bool {
 	for _, v := range ai {
-		if iss == v{
+		if iss == v {
 			return true
 		}
 	}
