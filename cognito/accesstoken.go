@@ -3,7 +3,6 @@ package cognito
 import (
 	"errors"
 	"fmt"
-	"github.com/buger/jsonparser"
 	"github.com/pascaldekloe/jwt"
 	"github.com/thefabric-io/jwtauthorizer"
 	"strings"
@@ -17,7 +16,7 @@ type accessToken struct {
 	CognitoGroups Groups
 	TokenUse      string
 	Scopes        Scopes
-	AuthTime      int64
+	AuthTime      jwt.NumericTime
 	Version       int64
 	ClientID      string
 	Username      string
@@ -43,7 +42,7 @@ func (a accessToken) String() string {
 		a.CognitoGroups.String(),
 		a.TokenUse,
 		a.Scopes.String(),
-		time.Unix(a.AuthTime, 0),
+		a.AuthTime.Time(),
 		a.Claims.Issuer,
 		a.Claims.Expires.String(),
 		a.Claims.Issued.String(),
@@ -66,41 +65,40 @@ func (a accessToken) HasJWKS() bool {
 	return true
 }
 
-func (a *accessToken) hydrateFromJSON(raw []byte) error {
-	_, vt, _, err := jsonparser.Get(raw, "cognito:groups")
-	if err != nil {
-		return err
+func (a *accessToken) unmarshalJSONMap(m map[string]interface{}) error {
+	groups, ok := m["cognito:groups"].([]interface{})
+	if !ok {
+		return fmt.Errorf("want JWT cognito:groups array, got %T", m["cognito:groups"])
 	}
-	if vt != jsonparser.Array {
-		return errors.New(fmt.Sprintf("cognito group should be array got %s", vt.String()))
+	for _, group := range groups {
+		s, ok := group.(string)
+		if !ok {
+			return fmt.Errorf("want JWT cognito:groups strings, got a %T", group)
+		}
+		a.CognitoGroups.AddValues(s)
 	}
-	_, err = jsonparser.ArrayEach(raw, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-		a.CognitoGroups.AddValues(string(value))
-	}, "cognito:groups")
-	if err != nil {
-		return err
+
+	if a.TokenUse, ok = m["token_use"].(string); !ok {
+		return fmt.Errorf("want JWT token_use string, got %T", m["token_use"])
 	}
-	if a.TokenUse, err = jsonparser.GetString(raw, "token_use"); err != nil {
-		return err
+	if s, ok := m["scope"].(string); !ok {
+		return fmt.Errorf("want JWT scope string, got %T", m["scope"])
+	} else {
+		a.Scopes = NewScopes(s)
 	}
-	scopeStr, err := jsonparser.GetString(raw, "scope")
-	if err != nil {
-		return err
+	if f, ok := m["auth_time"].(float64); !ok {
+		return fmt.Errorf("want JWT auth_time number, got %T", m["auth_time"])
+	} else {
+		a.AuthTime = jwt.NumericTime(f)
 	}
-	a.Scopes = NewScopes(scopeStr)
-	if a.AuthTime, err = jsonparser.GetInt(raw, "auth_time"); err != nil {
-		return err
+	if f, ok := m["version"].(float64); ok {
+		a.Version = int64(f)
 	}
-	if a.Version, err = jsonparser.GetInt(raw, "version"); err != nil {
-		return err
+	if a.ClientID, ok = m["client_id"].(string); !ok {
+		return fmt.Errorf("want JWT client_id string, got %T", m["client_id"])
 	}
-	a.ClientID, err = jsonparser.GetString(raw, "client_id")
-	if err != nil {
-		return err
-	}
-	a.Username, err = jsonparser.GetString(raw, "username")
-	if err != nil {
-		return err
+	if a.Username, ok = m["username"].(string); !ok {
+		return fmt.Errorf("want JWT username string, got %T", m["username"])
 	}
 	return nil
 }
@@ -112,7 +110,7 @@ func NewAccessToken(r []byte) (jwtauthorizer.AccessToken, error) {
 		return nil, err
 	}
 	at.Claims = *claims
-	if err = at.hydrateFromJSON(at.Claims.Raw); err != nil {
+	if err = at.unmarshalJSONMap(claims.Set); err != nil {
 		return nil, err
 	}
 	return &at, nil
