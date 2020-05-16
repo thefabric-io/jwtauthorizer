@@ -53,7 +53,7 @@ func (s authService) KeyRegister(iss string) (*jwt.KeyRegister, error) {
 }
 
 func (s authService) ValidateAccessToken(token jwtauthorizer.AccessToken) error {
-	a := token.(*accessToken)
+	a := token.(*AccessToken)
 	if !s.authorizedIssuers.IssuerIsAuthorized(a.Issuer) {
 		return ErrIssuerNotAuthorized
 	}

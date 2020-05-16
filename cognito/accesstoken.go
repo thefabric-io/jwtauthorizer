@@ -3,28 +3,69 @@ package cognito
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/buger/jsonparser"
 	"github.com/pascaldekloe/jwt"
 	"github.com/thefabric-io/jwtauthorizer"
-	"strings"
-	"time"
 )
 
 var ErrJWTExpired = errors.New("access token expired")
 
-type accessToken struct {
+type AccessToken struct {
 	jwt.Claims
-	CognitoGroups Groups
-	TokenUse      string
-	Scopes        Scopes
-	AuthTime      int64
-	Version       int64
-	ClientID      string
-	Username      string
-	rawBearer     []byte
+	groups    Groups
+	tokenUse  string
+	scopes    Scopes
+	authTime  int64
+	version   int64
+	clientID  string
+	username  string
+	rawBearer []byte
 }
 
-func (a accessToken) String() string {
+func (a AccessToken) HasScope(scope string) bool {
+	return a.scopes.HasScope(scope)
+}
+
+func (a AccessToken) HasScopes(scopes ...string) bool {
+	return a.scopes.HasScopes(scopes...)
+}
+
+func (a AccessToken) Groups() Groups {
+	return a.groups
+}
+
+func (a AccessToken) TokenUse() string {
+	return a.tokenUse
+}
+
+func (a AccessToken) Scopes() Scopes {
+	return a.scopes
+}
+
+func (a AccessToken) AuthTime() int64 {
+	return a.authTime
+}
+
+func (a AccessToken) Version() int64 {
+	return a.version
+}
+
+func (a AccessToken) ClientID() string {
+	return a.clientID
+}
+
+func (a AccessToken) Username() string {
+	return a.username
+}
+
+func (a AccessToken) RawBearer() []byte {
+	return a.rawBearer
+}
+
+func (a AccessToken) String() string {
 	return fmt.Sprintf("\n\nAccessToken\n"+
 		"\t|Sub: %s\n"+
 		"\t|Groups: %s\n"+
@@ -40,65 +81,77 @@ func (a accessToken) String() string {
 		"\t|Username: %s\n"+
 		"\t|RawBearer: %s\n",
 		a.Claims.Subject,
-		a.CognitoGroups.String(),
-		a.TokenUse,
-		a.Scopes.String(),
-		time.Unix(a.AuthTime, 0),
+		a.groups.String(),
+		a.tokenUse,
+		a.scopes.String(),
+		time.Unix(a.authTime, 0),
 		a.Claims.Issuer,
 		a.Claims.Expires.String(),
 		a.Claims.Issued.String(),
-		a.Version,
+		a.version,
 		a.Claims.ID,
-		a.ClientID,
-		a.Username,
+		a.clientID,
+		a.username,
 		a.rawBearer,
 	)
 }
 
-func (a accessToken) Validate() error {
+func (a AccessToken) Validate() error {
 	if !a.Valid(time.Now().UTC()) {
 		return ErrJWTExpired
 	}
 	return nil
 }
 
-func (a accessToken) HasJWKS() bool {
+func (a AccessToken) HasJWKS() bool {
 	return true
 }
 
-func (a *accessToken) hydrateFromJSON(raw []byte) error {
+func (a *AccessToken) fromJSON(raw []byte) error {
 	_, vt, _, err := jsonparser.Get(raw, "cognito:groups")
 	if err != nil {
+		if vt != jsonparser.NotExist{
+			return err
+		}
+	}
+
+	if vt != jsonparser.NotExist{
+		if vt != jsonparser.Array {
+			return fmt.Errorf("cognito group should be array got %s", vt.String())
+		}
+
+		_, err = jsonparser.ArrayEach(raw, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
+			a.groups.AddValues(string(value))
+		}, "cognito:groups")
+		if err != nil {
+			return err
+		}
+	}
+
+	if a.tokenUse, err = jsonparser.GetString(raw, "token_use"); err != nil {
 		return err
 	}
-	if vt != jsonparser.Array {
-		return errors.New(fmt.Sprintf("cognito group should be array got %s", vt.String()))
-	}
-	_, err = jsonparser.ArrayEach(raw, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-		a.CognitoGroups.AddValues(string(value))
-	}, "cognito:groups")
-	if err != nil {
-		return err
-	}
-	if a.TokenUse, err = jsonparser.GetString(raw, "token_use"); err != nil {
-		return err
-	}
+
 	scopeStr, err := jsonparser.GetString(raw, "scope")
 	if err != nil {
 		return err
 	}
-	a.Scopes = NewScopes(scopeStr)
-	if a.AuthTime, err = jsonparser.GetInt(raw, "auth_time"); err != nil {
+
+	a.scopes = NewScopes(scopeStr)
+	if a.authTime, err = jsonparser.GetInt(raw, "auth_time"); err != nil {
 		return err
 	}
-	if a.Version, err = jsonparser.GetInt(raw, "version"); err != nil {
+
+	if a.version, err = jsonparser.GetInt(raw, "version"); err != nil {
 		return err
 	}
-	a.ClientID, err = jsonparser.GetString(raw, "client_id")
+
+	a.clientID, err = jsonparser.GetString(raw, "client_id")
 	if err != nil {
 		return err
 	}
-	a.Username, err = jsonparser.GetString(raw, "username")
+
+	a.username, err = jsonparser.GetString(raw, "username")
 	if err != nil {
 		return err
 	}
@@ -106,13 +159,13 @@ func (a *accessToken) hydrateFromJSON(raw []byte) error {
 }
 
 func NewAccessToken(r []byte) (jwtauthorizer.AccessToken, error) {
-	at := accessToken{rawBearer: r}
+	at := AccessToken{rawBearer: r}
 	claims, err := jwt.ParseWithoutCheck(r)
 	if err != nil {
 		return nil, err
 	}
 	at.Claims = *claims
-	if err = at.hydrateFromJSON(at.Claims.Raw); err != nil {
+	if err = at.fromJSON(at.Claims.Raw); err != nil {
 		return nil, err
 	}
 	return &at, nil
@@ -120,6 +173,28 @@ func NewAccessToken(r []byte) (jwtauthorizer.AccessToken, error) {
 
 type Scopes struct {
 	Values []string
+}
+
+func (s Scopes) HasScopes(scopes ...string) bool {
+	c := 0
+	for _, v := range scopes{
+		if s.HasScope(v){
+			c++
+		}
+	}
+	if c == len(scopes){
+		return true
+	}
+	return false
+}
+
+func (s Scopes) HasScope(scope string) bool {
+	for _, v := range s.Values{
+		if v == scope{
+			return true
+		}
+	}
+	return false
 }
 
 func (s Scopes) String() string {
